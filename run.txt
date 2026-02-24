@@ -1,0 +1,4 @@
+psql -h localhost -U postgres -d app_db
+\c rentals
+CREATE ROLE users WITH LOGIN PASSWORD 'tapirhorse';
+  migrate create -seq -ext=.sql -dir=./migrations locations_table
