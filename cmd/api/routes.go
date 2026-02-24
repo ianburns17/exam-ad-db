@@ -8,15 +8,17 @@ import (
 
 func (a *applicationDependencies) routes() http.Handler {
 
-	// setup a new router
 	router := httprouter.New()
 	router.NotFound = http.HandlerFunc(a.notFoundResponse)
 	router.MethodNotAllowed = http.HandlerFunc(a.methodNotAllowedResponse)
-	// setup routes
+
+	// Healthcheck
 	router.HandlerFunc(http.MethodGet, "/v1/healthcheck", a.healthcheckHandler)
-	router.HandlerFunc(http.MethodPost, "/v1/comments", a.createCommentHandler)
-	router.HandlerFunc(http.MethodPost, "/v1/cars/read", a.readCarsHandler)
-	router.HandlerFunc(http.MethodGet, "/v1/cars/write", a.writeCarsHandler)
+
+	router.HandlerFunc(http.MethodPost, "/v1/cars", a.createCarHandler)
+	router.HandlerFunc(http.MethodGet, "/v1/cars/:id", a.getCarHandler)
+	router.HandlerFunc(http.MethodGet, "/v1/cars", a.listCarsHandler)
+	router.HandlerFunc(http.MethodDelete, "/v1/cars/:id", a.deleteCarHandler)
 
 	return a.recoverPanic(router)
 
