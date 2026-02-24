@@ -1,12 +1,15 @@
 package main
 
 import (
+	"database/sql"
 	"flag"
 	"fmt"
 	"log/slog"
 	"net/http"
 	"os"
 	"time"
+
+	_ "github.com/lib/pq"
 )
 
 const appVersion = "1.0.0"
@@ -19,6 +22,7 @@ type serverConfig struct {
 type applicationDependencies struct {
 	config serverConfig
 	logger *slog.Logger
+	db     *sql.DB
 }
 
 func main() {
@@ -31,9 +35,29 @@ func main() {
 
 	logger := slog.New(slog.NewTextHandler(os.Stdout, nil))
 
+	// Get DB connection string from env or use default
+	dsn := os.Getenv("DATABASE_URL")
+	if dsn == "" {
+		dsn = "postgres://users:tapirhorse@localhost/rentals?sslmode=disable"
+	}
+
+	db, err := sql.Open("postgres", dsn)
+	if err != nil {
+		logger.Error("cannot open database", "error", err)
+		os.Exit(1)
+	}
+	defer db.Close()
+
+	// Test DB connection
+	if err := db.Ping(); err != nil {
+		logger.Error("cannot connect to database", "error", err)
+		os.Exit(1)
+	}
+
 	appInstance := &applicationDependencies{
 		config: settings,
 		logger: logger,
+		db:     db,
 	}
 
 	// Use the routes() function from routes.go
@@ -48,8 +72,7 @@ func main() {
 		ErrorLog:     slog.NewLogLogger(logger.Handler(), slog.LevelError),
 	}
 	logger.Info("starting server", "address", apiServer.Addr, "environment", settings.environment)
-	err := apiServer.ListenAndServe()
+	err = apiServer.ListenAndServe()
 	logger.Error(err.Error())
 	os.Exit(1)
-
 }

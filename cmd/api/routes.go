@@ -15,10 +15,12 @@ func (a *applicationDependencies) routes() http.Handler {
 	// Healthcheck
 	router.HandlerFunc(http.MethodGet, "/v1/healthcheck", a.healthcheckHandler)
 
-	router.HandlerFunc(http.MethodPost, "/v1/cars", a.createCarHandler)
-	router.HandlerFunc(http.MethodGet, "/v1/cars/:id", a.getCarHandler)
-	router.HandlerFunc(http.MethodGet, "/v1/cars", a.listCarsHandler)
-	router.HandlerFunc(http.MethodDelete, "/v1/cars/:id", a.deleteCarHandler)
+	router.HandlerFunc(http.MethodPost, "/v1/vehicles", a.createVehicleHandler)
+	router.HandlerFunc(http.MethodGet, "/v1/vehicles/:id", a.getVehicleHandler)
+	router.HandlerFunc(http.MethodGet, "/v1/vehicles", a.listVehiclesHandler)
+	router.HandlerFunc(http.MethodPut, "/v1/vehicles/:id", a.updateVehicleHandler)
+	router.HandlerFunc(http.MethodPatch, "/v1/vehicles/:id", a.patchVehicleHandler)
+	router.HandlerFunc(http.MethodDelete, "/v1/vehicles/:id", a.deleteVehicleHandler)
 
 	return a.recoverPanic(router)
 
