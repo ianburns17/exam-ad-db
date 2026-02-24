@@ -5,12 +5,12 @@
 curl -X POST http://localhost:4000/v1/vehicles \
   -H "Content-Type: application/json" \
   -d '{
-    "vin": "1HGCM82633A004352",
+    "vin": "1HGCM82633A004319",
     "make": "Honda",
     "model": "Civic",
     "year": 2020,
     "category": "Sedan",
-    "daily_rate": 49.99,
+    "daily_rate": 49,
     "mileage": 10000,
     "fuel_capacity": 50,
     "status": "available"
@@ -20,13 +20,13 @@ curl -X POST http://localhost:4000/v1/vehicles \
 curl http://localhost:4000/v1/vehicles
 
 # Get a vehicle by ID (GET)
-curl http://localhost:4000/v1/vehicles/1
+curl http://localhost:4000/v1/vehicles/7
 
 # Update a vehicle completely (PUT)
-curl -X PUT http://localhost:4000/v1/vehicles/2 \
+curl -X PUT http://localhost:4000/v1/vehicles/7 \
   -H "Content-Type: application/json" \
   -d '{
-    "vin": "1HGCM82633A004352",
+    "vin": "1KGCM82633A004352",
     "make": "Honda",
     "model": "Accord",
     "year": 2021,
@@ -46,7 +46,7 @@ curl -X PATCH http://localhost:4000/v1/vehicles/2 \
   }'
 
 # Delete a vehicle (DELETE)
-curl -X DELETE http://localhost:4000/v1/vehicles/2
+curl -X DELETE http://localhost:4000/v1/vehicles/7
 
 # If you use environment variables for host/port, you can source them from .envrc:
 # Example .envrc:
@@ -54,7 +54,7 @@ curl -X DELETE http://localhost:4000/v1/vehicles/2
 # Then use:
 # curl "$API_HOST/v1/vehicles"
 
-psql -h localhost -U postgres -d app_db
+psql -h localhost -U users -d rentals
 \c rentals
 CREATE ROLE users WITH LOGIN PASSWORD 'tapirhorse';
   migrate create -seq -ext=.sql -dir=./migrations locations_table

@@ -35,11 +35,8 @@ func main() {
 
 	logger := slog.New(slog.NewTextHandler(os.Stdout, nil))
 
-	// Get DB connection string from env or use default
-	dsn := os.Getenv("DATABASE_URL")
-	if dsn == "" {
-		dsn = "postgres://users:tapirhorse@localhost/rentals?sslmode=disable"
-	}
+	// Get DB connection string from envrc (DSN)
+	dsn := os.Getenv("DSN")
 
 	db, err := sql.Open("postgres", dsn)
 	if err != nil {
