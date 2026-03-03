@@ -134,13 +134,38 @@ func (a *applicationDependencies) getVehicleHandler(w http.ResponseWriter, r *ht
 
 // GET /v1/vehicles
 func (a *applicationDependencies) listVehiclesHandler(w http.ResponseWriter, r *http.Request) {
+	// Parse query params for pagination and sorting
+	q := r.URL.Query()
+	page, _ := strconv.Atoi(q.Get("page"))
+	if page < 1 {
+		page = 1
+	}
+	pageSize, _ := strconv.Atoi(q.Get("page_size"))
+	if pageSize < 1 || pageSize > 100 {
+		pageSize = 20
+	}
+	sort := q.Get("sort")
+	if sort == "" {
+		sort = "id"
+	}
+	direction := q.Get("direction")
+	if direction != "desc" {
+		direction = "asc"
+	}
 	vehicleModel := data.VehicleModel{DB: a.getDB()}
-	vehicles, err := vehicleModel.GetAll()
+	vehicles, total, err := vehicleModel.GetAllPaginated(page, pageSize, sort, direction)
 	if err != nil {
 		a.serverErrorResponse(w, r, err)
 		return
 	}
-	resp := envelope{"vehicles": vehicles}
+	resp := envelope{
+		"vehicles": vehicles,
+		"pagination": map[string]any{
+			"page":      page,
+			"page_size": pageSize,
+			"total":     total,
+		},
+	}
 	a.writeJSON(w, http.StatusOK, resp, nil)
 }
 

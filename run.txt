@@ -1,6 +1,8 @@
 # Example curl commands for testing all vehicle CRUD endpoints
 # Assumes API is running at http://localhost:4000
-
+docker compose down
+docker rm -f codespaces-postgres
+docker compose up -d
 # Create a vehicle (POST)
 curl -X POST http://localhost:4000/v1/vehicles \
   -H "Content-Type: application/json" \
@@ -58,3 +60,9 @@ psql -h localhost -U users -d rentals
 \c rentals
 CREATE ROLE users WITH LOGIN PASSWORD 'tapirhorse';
   migrate create -seq -ext=.sql -dir=./migrations locations_table
+
+
+curl "http://localhost:4000/v1/vehicles?page=2"
+curl "http://localhost:4000/v1/vehicles?page=2&page_size=10&sort=make&direction=asc"
+curl "http://localhost:4000/v1/vehicles?page=2&page_size=10&sort=make&direction=desc"
+

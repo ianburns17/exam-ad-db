@@ -126,22 +126,52 @@ func (m *VehicleModel) Get(id int64) (*Vehicle, error) {
 	return &v, nil
 }
 
-func (m *VehicleModel) GetAll() ([]*Vehicle, error) {
-	query := `SELECT vehicle_id, vin, make, model, year, category, daily_rate, mileage, fuel_capacity, current_location_id, status, created_at FROM vehicles`
-	rows, err := m.DB.QueryContext(context.Background(), query)
+var allowedSorts = map[string]string{
+	"id":            "vehicle_id",
+	"vin":           "vin",
+	"make":          "make",
+	"model":         "model",
+	"year":          "year",
+	"category":      "category",
+	"daily_rate":    "daily_rate",
+	"mileage":       "mileage",
+	"fuel_capacity": "fuel_capacity",
+	"status":        "status",
+	"created_at":    "created_at",
+}
+
+func (m *VehicleModel) GetAllPaginated(page, pageSize int, sort, direction string) ([]*Vehicle, int, error) {
+	// Validate sort
+	sortCol, ok := allowedSorts[sort]
+	if !ok {
+		sortCol = "vehicle_id"
+	}
+	dir := "ASC"
+	if direction == "desc" {
+		dir = "DESC"
+	}
+	offset := (page - 1) * pageSize
+	// Get total count
+	var total int  
+	err := m.DB.QueryRowContext(context.Background(), "SELECT COUNT(*) FROM vehicles").Scan(&total)
 	if err != nil {
-		return nil, err
+		return nil, 0, err
+	}
+	query := `SELECT vehicle_id, vin, make, model, year, category, daily_rate, mileage, fuel_capacity, current_location_id, status, created_at FROM vehicles ORDER BY ` + sortCol + ` ` + dir + ` LIMIT $1 OFFSET $2`
+	rows, err := m.DB.QueryContext(context.Background(), query, pageSize, offset)
+	if err != nil {
+		return nil, 0, err
 	}
 	defer rows.Close()
 	var vehicles []*Vehicle
 	for rows.Next() {
 		var v Vehicle
 		if err := rows.Scan(&v.ID, &v.VIN, &v.Make, &v.Model, &v.Year, &v.Category, &v.DailyRate, &v.Mileage, &v.FuelCapacity, &v.CurrentLocationID, &v.Status, &v.CreatedAt); err != nil {
-			return nil, err
+			return nil, 0, err
 		}
 		vehicles = append(vehicles, &v)
 	}
-	return vehicles, nil
+	return vehicles, total, nil
 }
 
 func (m *VehicleModel) Delete(id int64) error {
