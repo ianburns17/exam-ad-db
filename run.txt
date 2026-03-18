@@ -62,7 +62,20 @@ CREATE ROLE users WITH LOGIN PASSWORD 'tapirhorse';
   migrate create -seq -ext=.sql -dir=./migrations locations_table
 
 
-curl "http://localhost:4000/v1/vehicles?page=2"
-curl "http://localhost:4000/v1/vehicles?page=2&page_size=10&sort=make&direction=asc"
+curl "http://localhost:4000/v1/vehicles?page=2&page_size=5"
+curl "http://localhost:4000/v1/vehicles?page=2&page_size=10&sort=Mileage&direction=asc"
 curl "http://localhost:4000/v1/vehicles?page=2&page_size=10&sort=make&direction=desc"
 
+ vehicle_id, vin, make, model, year, category, daily_rate, mileage, fuel_capacity
+# ---
+# Test graceful shutdown
+# In a separate terminal, run:
+# kill -SIGINT <PID_OF_API_SERVER>
+# The server should finish handling in-flight requests and exit cleanly.
+# Example: (replace <PID> with actual process id)
+# kill -SIGINT <PID>
+
+for i in {1..20}; do
+  curl -i http://localhost:4000/v1/vehicles
+done
+kill -SIGINT 3565

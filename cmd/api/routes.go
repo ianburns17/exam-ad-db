@@ -7,7 +7,6 @@ import (
 )
 
 func (a *applicationDependencies) routes() http.Handler {
-
 	router := httprouter.New()
 	router.NotFound = http.HandlerFunc(a.notFoundResponse)
 	router.MethodNotAllowed = http.HandlerFunc(a.methodNotAllowedResponse)
@@ -22,6 +21,6 @@ func (a *applicationDependencies) routes() http.Handler {
 	router.HandlerFunc(http.MethodPatch, "/v1/vehicles/:id", a.patchVehicleHandler)
 	router.HandlerFunc(http.MethodDelete, "/v1/vehicles/:id", a.deleteVehicleHandler)
 
-	return a.recoverPanic(router)
-
+	// Chain rate limiting and panic recovery middleware
+	return a.recoverPanic(a.rateLimit(router))
 }
