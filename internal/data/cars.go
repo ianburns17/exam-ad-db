@@ -1,4 +1,3 @@
-
 package data
 
 import (
@@ -153,7 +152,7 @@ func (m *VehicleModel) GetAllPaginated(page, pageSize int, sort, direction strin
 	}
 	offset := (page - 1) * pageSize
 	// Get total count
-	var total int  
+	var total int
 	err := m.DB.QueryRowContext(context.Background(), "SELECT COUNT(*) FROM vehicles").Scan(&total)
 	if err != nil {
 		return nil, 0, err
