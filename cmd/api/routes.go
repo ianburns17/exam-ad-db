@@ -21,6 +21,17 @@ func (a *applicationDependencies) routes() http.Handler {
 	router.HandlerFunc(http.MethodPatch, "/v1/vehicles/:id", a.patchVehicleHandler)
 	router.HandlerFunc(http.MethodDelete, "/v1/vehicles/:id", a.deleteVehicleHandler)
 
-	// Chain rate limiting and panic recovery middleware
-	return a.recoverPanic(a.rateLimit(router))
+	// Expose /metrics endpoint
+	router.HandlerFunc(http.MethodGet, "/metrics", a.metricsHandler)
+
+	// Chain CORS, metrics, gzip, rate limiting, and panic recovery middleware
+	return a.recoverPanic(
+		a.rateLimit(
+			a.gzipMiddleware(
+				a.metricsMiddleware(
+					a.corsMiddleware(router),
+				),
+			),
+		),
+	)
 }
