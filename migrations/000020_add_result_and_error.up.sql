@@ -1,0 +1,3 @@
+ALTER TABLE jobs
+ADD COLUMN result JSONB NOT NULL DEFAULT '{}',
+ADD COLUMN error_msg TEXT;
