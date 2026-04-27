@@ -1,0 +1,1079 @@
+JSONB
+
+JSON vs JSONB Demo
+-- Create two test tables
+CREATE TABLE test_json (data JSON);
+CREATE TABLE test_jsonb (data JSONB);
+-- JSON preserves everything including ordering and duplicates
+INSERT INTO test_json  VALUES ('{"b": 2, "a": 1, "b": 99}');
+INSERT INTO test_jsonb VALUES ('{"b": 2, "a": 1, "b": 99}');
+
+SELECT data FROM test_json;
+SELECT data FROM test_jsonb;
+
+Step 1: Save Image + Job
+Client: uploads an image
+
+Server: (i) saves the image to disk (ii) saves the file path of the image to the database (iii)  records that a job exists
+
+Files, such as images,  are not stored in the database – they are stored in the filesystem (disk) or object storage like Amazon S3
+
+The database is for storing structured data only (structured and semi-structured), not unstructured data like images or videos.
+
+Sample Payload
+-- the shape of the our data (payload) / metadata
+-- remember that the do not know beforehand how
+-- many entries will be in the payload that why we use JSONB
+
+{
+    "original_filename": "belize_barrier_reef.jpg",
+    "stored_path": "uploads/f47ac10b.jpg",
+    "mime_type": "image/jpeg",
+    "file_size": 5242880
+}
+
+Jobs Table v1
+-- we use uuids instead of serial (modern and more secure)
+-- each image will have slightly different metadata, so we use JSONB
+-- to factor in this variation.
+-- each job must have a payload/metadata (NOT NULL)
+
+CREATE TABLE IF NOT EXISTS jobs (
+    id  UUID  PRIMARY KEY DEFAULT uuidv7(),
+    payload JSONB NOT NULL,
+    created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+Jobs Table v1 - Sample Data
+INSERT INTO jobs (payload) VALUES
+(
+  '{
+        "original_filename": "belize_barrier_reef.jpg",
+        "stored_path":       "uploads/a1b2c3d4.jpg",
+        "mime_type":         "image/jpeg",
+        "file_size":         5242880
+    }'::jsonb
+),
+
+Jobs Table v1 - Sample Data
+(
+    '{
+        "original_filename": "hummingbird.png",
+        "stored_path":       "uploads/e5f6a7b8.png",
+        "mime_type":         "image/png",
+        "file_size":         2097152,
+        "source":            "mobile_upload"
+    }'::jsonb
+),
+
+Jobs Table v1 - Sample Data
+(
+    '{
+        "original_filename": "cockscomb_basin.jpg",
+        "stored_path":       "uploads/c9d0e1f2.jpg",
+        "mime_type":         "image/jpeg",
+        "file_size":         8388608
+    }'::jsonb
+);
+
+Jobs Table v1 - Query Data
+-- see all jobs, most recent first
+SELECT id, payload, created_at
+FROM jobs
+ORDER BY created_at DESC;
+ 
+
+Query JSONB Data
+PostgreSQL provides us with special operators to work with JSON/JSONB
+->  returns data as JSONB
+->>  returns the data as TEXT
+
+We use -> when we want to extract data that is fed into a pipeline
+
+We use ->> when we want to display, compare or pass data to a function that expects TEXT
+
+Query JSONB Data (1)
+
+-- difference between -> and ->>
+SELECT id, 
+payload->'file_size' AS size_jsonb,    -- returns jsonb: 5242880
+payload->>'file_size' AS size_text     -- returns jsonb: "5242880"
+FROM jobs;
+ 
+
+Query JSONB Data (2)
+
+-- difference between -> and ->>
+-- We use ->> when we need to do comparison
+SELECT id, 
+payload->>'original_filename' AS filename
+FROM jobs
+WHERE payload->>'mime_type' = 'image/jpeg';
+ 
+
+Query JSONB Data (3)
+
+-- difference between -> and ->>
+-- We use ->> when we need to do comparison
+-- there is no error if a field is missing
+SELECT id, 
+payload->>'original_filename' AS filename
+FROM jobs
+WHERE payload->>'source' = 'mobile_upload';
+ 
+
+Checking on the Work
+The user has uploaded the image.  We stored it to disk and we stored the image's  metadata to PostgreSQL
+
+Problem: How does the user know when the image processing is done?
+
+We need to provide a polling (asking) mechanism and a status update mechanism
+
+Checking on the Work
+
+After the image is uploaded, the Go server will return a job ID to the client, which the client will use poll
+     
+         GET /jobs/status/{id}
+Problem: If we return our internal id as the job ID, the will unintentionally leak the timestamp information because uuidv7() embeds the timestamp in the first 48 bits. Imagine what a competent hacker or your competitor  can do with this information
+ SELECT uuid_extract_timestamp('0197f96c-b278-7f64-a32f-dae3cabe1ff0');
+ -- 2025-04-14 10:32:17.432+00
+
+Random IDs - uuidv4()
+
+To avoid leaking metadata, we provide an alternate random ID that is meant for public use
+        -- uuidv4() produces random values
+        ALTER TABLE jobs
+    ADD COLUMN public_id UUID NOT NULL UNIQUE DEFAULT uuidv4();
+
+Random IDs - uuidv4()
+
+ -- test our change
+        SELECT 
+    id  AS internal_id,
+    public_id  AS client_id,
+    created_at
+    FROM jobs;
+
+Random IDs - uuidv4()
+
+ -- Simulate Go adding an entry to the DB
+        INSERT INTO jobs (payload) VALUES
+   (
+    '{
+        "original_filename": "jaguar_trail.jpg",
+        "stored_path":       "uploads/d3e4f5a6.jpg",
+        "mime_type":         "image/jpeg",
+        "file_size":         3145728
+    }'::jsonb
+  );
+
+Random IDs - uuidv4()
+
+  -- testing 
+    SELECT public_id 
+  FROM jobs
+  WHERE payload->>'original_filename' = 'jaguar_trail.jpg';
+
+Random IDs - uuidv4()
+
+
+State of a Job
+
+The client will use the public_id to poll the job
+
+We add a status column and a progress column to our jobs table
+
+These two columns must not be put into the payload (JSONB)
+
+
+State of a Job
+
+
+  -- our table now can report back on job status and progress 
+   ALTER TABLE jobs
+ ADD COLUMN status TEXT NOT NULL DEFAULT 'pending'
+ CHECK (status IN ('pending', 'processing', 'done', 'failed')),
+ ADD COLUMN progress INTEGER NOT NULL DEFAULT 0
+ CHECK (progress BETWEEN 0 AND 100);
+
+State of a Job
+
+
+  -- status = 'pending' and progress = 0 by default 
+  SELECT 
+    public_id,
+    status,
+    progress,
+    payload->>'original_filename' AS filename
+  FROM jobs;
+
+Simulate the Worker Lifecycle
+
+
+  -- the worker claims the oldest job 
+  UPDATE jobs
+  SET status = 'processing', progress = 0
+  WHERE  id = (
+    SELECT id FROM jobs
+    WHERE  status = 'pending'
+    ORDER  BY created_at
+    LIMIT  1
+  );
+
+Simulate the Worker Lifecycle
+
+
+  -- job in progress 25% done
+  UPDATE jobs
+  SET progress = 25
+  WHERE status = 'processing';
+
+Simulate the Worker Lifecycle
+
+
+  -- job done
+  UPDATE jobs
+  SET status = 'done', progress = 100
+  WHERE status = 'processing';
+
+Verify Constraints
+
+
+
+  -- Try to write an invalid status
+  UPDATE jobs SET status = 'complet' WHERE status = 'done';
+
+ -- Try to write an invalid progress
+  UPDATE jobs SET progress = 150 WHERE status = 'pending';
+
+Client Polling
+
+
+
+  -- Client Polling causes this query to run
+  SELECT 
+    public_id,
+    status,
+    progress
+  FROM jobs
+  WHERE public_id = 'your-public-id-here';
+
+Worker Polling
+
+
+
+  -- Worker Polling for next (oldest) job causes this query to run
+  SELECT id, payload
+  FROM   jobs
+  WHERE  status = 'pending'
+  ORDER  BY created_at
+  LIMIT  1;
+
+Full Job Listing
+
+
+
+  -- Everything about the jobs
+  SELECT 
+    public_id,
+    status,
+    progress,
+    payload->>'original_filename' AS filename,
+    payload->>'mime_type'         AS mime_type
+  FROM jobs
+  ORDER BY created_at;
+
+The Full Picture
+
+
+
+Output Files
+
+The client needs the path to the processed images
+
+Let's assume we have four operations (convert to grayscale, apply a blur, scale to a standard size, generate a thumbnail)
+
+Each operation produces a new file on disk. The worker need to keep a record of the location of each output file plus any failures so that the client can retrieve them during polling
+
+
+Output Files
+
+We will store the output files using JSONB since there is variability in the number of files
+
+Workers write the results incrementally. The client should be able to get partial results (not wait for all four files to finish). JSONB allows us to append one field at a time
+
+Errors (failures) will be plain text (TEXT)
+
+Output Files - SQL
+
+-- result starts off as an empty object. For each completed
+-- operation we add an entry into the object
+-- always remember to initialize result to '{}' to make the
+-- appending of new entries possible
+  ALTER TABLE
+  ADD COLUMN result JSONB NOT NULL DEFAULT '{}',
+  ADD COLUMN error_msg TEXT;
+
+Output Files - SQL
+
+-- verify that result = '{}' and error_msg = NULL
+ SELECT 
+    public_id,
+    status,
+    progress,
+    result,
+    error_msg
+FROM jobs;
+
+Simulate Processing
+
+-- update jobs
+UPDATE jobs 
+SET 
+status = 'processing' 
+WHERE status = 'pending';
+
+
+Simulate Processing
+
+-- || is the merge operator, not the OR operator
+-- if a key already exists, the value is overwritten
+-- if the key does not exist, a new one is created
+
+UPDATE jobs
+SET
+    progress = 25,
+    result   = result || '{"grayscale_path":   "uploads/processed/gray_a1b2c3d4.jpg"}'::jsonb
+WHERE status = 'processing';
+
+Simulate Processing - Test
+
+-- check progress
+SELECT 
+    status,
+    progress,
+    result
+FROM jobs
+WHERE status IN ('processing', 'done');
+
+Simulate Processing
+
+-- || is the merge operator, not the OR operator
+-- if a key already exists, the value is overwritten
+-- if the key does not exist, a new one is created
+
+UPDATE jobs
+SET
+    progress = 50,
+    result   = result || '{"blurred_path": "uploads/processed/blur_a1b2c3d4.jpg"}'::jsonb
+WHERE status = 'processing';
+
+Simulate Processing - Test
+
+-- check progress
+SELECT 
+    status,
+    progress,
+    result
+FROM jobs
+WHERE status IN ('processing', 'done');
+
+Simulate Processing
+
+-- || is the merge operator, not the OR operator
+-- if a key already exists, the value is overwritten
+-- if the key does not exist, a new one is created
+
+UPDATE jobs
+SET
+    progress = 75,
+    result   = result || '{"scaled_path": "uploads/processed/scaled_a1b2c3d4.jpg"}'::jsonb
+WHERE status = 'processing';
+
+Simulate Processing - Test
+
+-- check progress
+SELECT 
+    status,
+    progress,
+    result
+FROM jobs
+WHERE status IN ('processing', 'done');
+
+Simulate Processing
+
+-- || is the merge operator, not the OR operator
+-- if a key already exists, the value is overwritten
+-- if the key does not exist, a new one is created
+
+UPDATE jobs
+SET
+    progress = 100,
+    status   = 'done',
+    result   = result || '{"thumbnail_path": "uploads/processed/thumb_a1b2c3d4.jpg"}'::jsonb
+WHERE status = 'processing';
+
+Simulate Processing - Test
+
+-- check progress
+SELECT 
+    status,
+    progress,
+    result
+FROM jobs
+WHERE status IN ('processing', 'done');
+
+Simulate Failure
+
+-- Simulate a failure
+UPDATE jobs
+SET
+    status    = 'failed',
+    error_msg = 'ImageProcessingError: unsupported color profile ICC v5 in hummingbird.png'
+WHERE payload->>'original_filename' = 'hummingbird.png';
+
+Simulate Failure - Test Failure
+
+-- Simulate a failure
+UPDATE jobs
+SET
+    status    = 'failed',
+    error_msg = 'ImageProcessingError: unsupported color profile ICC v5 in hummingbird.png'
+WHERE payload->>'original_filename' = 'hummingbird.png';
+
+Query Output Files
+
+-- Get location of complete jobs
+SELECT result FROM jobs WHERE status = 'done';
+
+{
+   "grayscale_path": "uploads/processed/gray_a1b2c3d4.jpg",
+   "blurred_path":   "uploads/processed/blur_a1b2c3d4.jpg",
+   "scaled_path":    "uploads/processed/scaled_a1b2c3d4.jpg",
+   "thumbnail_path": "uploads/processed/thumb_a1b2c3d4.jpg"
+}
+
+|| Operator
+
+-- the || operator is for merging
+
+'{"a": 1}'::jsonb || '{"b": 2}'::jsonb
+ -- result: {"a": 1, "b": 2}
+
+'{"a": 1}'::jsonb || '{"a": 99}'::jsonb
+-- result: {"a": 99}, right side wins on key collision/override
+
+Tracking Job State
+
+We need a way to add a timestamp when the state of the job changes (updated_at). This becomes extremely important when the server want to send notifications to the user (SSE) instead of the using hammering the endpoint every second (polling)
+
+Why: How do know if a worker has crashed? How do we know how, on average, it takes to create thumbnails?
+
+We need to always know the state of the submitted job
+
+The created_at column tells us only when the job was submitted (history)
+
+Tracking Job State
+
+Polling (client):
+GET /jobs/status/{public_id}
+
+Server Sent Events (SSE): 
+   "Has this job changed since the last time I checked?" If
+    yes, let me notify the client of this change
+
+The updated_at Column
+
+The application code (handlers) should not be given the responsibility of updating this column
+
+The application  has many components that change things in the system, so our handlers would miss all these changes.  The DB should always be responsible for doing the updates
+
+The updated_at Column
+
+-- add a column for updates
+   ALTER TABLE jobs
+   ADD COLUMN updated_at TIMESTAMPTZ NOT NULL DEFAULT now();
+
+The updated_at Column - Test
+
+-- verify updated_at column is working correctly
+   SELECT
+    public_id,
+    status,
+    created_at,
+    updated_at
+  FROM jobs
+  ORDER BY created_at;
+
+The updated_at Column - Test
+
+-- set updated_at to created_at to make the system consistent
+   UPDATE jobs SET updated_at = created_at;
+
+Worker Simulation - updated_at
+
+-- The worker updates the job queue after doing some work
+-- This type of update we should learn to the DB to do (trigger)
+UPDATE jobs
+SET
+ progress = 50,
+ result  = result || '{"blurred_path":    "uploads/processed/blur_c9d0e1f2.jpg"}'::jsonb,
+updated_at = now()
+WHERE payload->>'original_filename' = 'cockscomb_basin.jpg';
+
+Worker Simulation - updated_at
+
+-- The worker forgot to update the updated_at column
+UPDATE jobs
+SET progress = 75
+WHERE payload->>'original_filename' = 'cockscomb_basin.jpg';
+
+Worker Simulation - updated_at
+
+-- progress is 75, but no update was made. Any part of
+-- the system monitoring updated_at so that it can take action
+-- would take no action
+SELECT
+    public_id,
+    status,
+    progress,
+    created_at,
+    updated_at
+FROM jobs
+WHERE payload->>'original_filename' = 'cockscomb_basin.jpg';
+
+Why - updated_at
+
+-- finding jobs that have changes within the last t seconds, t = 60
+-- INTERVAL +/- '[quantity] [unit]' 
+SELECT
+    public_id,
+    status,
+    progress,
+    updated_at
+FROM jobs
+WHERE updated_at > now() - INTERVAL '60 seconds'
+ORDER BY updated_at DESC;
+
+Why - updated_at
+
+-- find stuck jobs - stragglers. The worker probably crashed
+SELECT
+    public_id,
+    status,
+    progress,
+    created_at,
+    updated_at
+FROM jobs
+WHERE status = 'processing'
+AND updated_at < now() - INTERVAL '5 minutes';
+
+Why - updated_at
+
+-- find out ?
+SELECT
+    public_id,
+    status,
+    created_at,
+    updated_at,
+    updated_at - created_at AS ?
+FROM jobs
+WHERE status IN ('done', 'failed');
+
+The updated_at Problem
+
+If each component is responsible for updating the updated_at column, some components might forget to do so.  This is a database concern, not an application code concern
+
+We use a trigger to do this critical task for us
+ 
+A trigger fires on every update regardless of which part of the system wrote the query
+
+The updated_at Problem
+
+If each component is responsible for updating the updated_at column, some components might forget to do so.  This is a database concern, not an application code concern
+
+We use a trigger to do this critical task for us
+ 
+A trigger fires on every update regardless of which part of the system wrote the query
+
+Triggers
+
+-- updated_at is updated by a trigger
+CREATE OR REPLACE FUNCTION set_updated_at()
+RETURNS TRIGGER AS $$
+BEGIN
+    NEW.updated_at = now();
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE TRIGGER jobs_updated_at
+BEFORE UPDATE ON jobs
+FOR EACH ROW EXECUTE FUNCTION set_updated_at();
+
+Verify Trigger Works
+
+-- updated_at is updated by a trigger
+UPDATE jobs
+SET progress = 60
+WHERE payload->>'original_filename' = 'cockscomb_basin.jpg';
+
+Verify Trigger Works
+
+-- updated_at is updated by a trigger
+SELECT
+    public_id,
+    progress,
+    updated_at
+FROM jobs
+WHERE payload->>'original_filename' = 'cockscomb_basin.jpg';
+
+Verify Trigger Works
+
+-- updated_at is updated by a trigger
+UPDATE jobs
+SET
+    progress   = 80,
+    updated_at = '2000-01-01 00:00:00+00'
+WHERE payload->>'original_filename' = 'cockscomb_basin.jpg';
+
+Verify Trigger Works
+
+-- updated_at is updated by a trigger
+SELECT
+    public_id,
+    progress,
+    updated_at
+FROM jobs
+WHERE payload->>'original_filename' = 'cockscomb_basin.jpg';
+
+Verify Trigger Exist
+
+--  check all trigger on jobs
+SELECT
+    trigger_name,
+    event_manipulation,
+    action_timing,
+    action_statement
+FROM information_schema.triggers
+WHERE event_object_table = 'jobs';
+
+Verify Function Exists
+
+--  check the functions exists
+SELECT
+    routine_name,
+    routine_type,
+    data_type
+FROM information_schema.routines
+WHERE routine_name = 'set_updated_at';
+
+A Full Worker Lifecycle
+
+-- Worker claims job
+UPDATE jobs
+SET status = 'processing'
+WHERE payload->>'original_filename' = 'jaguar_trail.jpg';
+
+-- Stage 1 complete
+UPDATE jobs
+SET
+    progress = 25,
+    result   = result || '{"grayscale_path": "uploads/processed/gray_d3e4f5a6.jpg"}'::jsonb
+WHERE payload->>'original_filename' = 'jaguar_trail.jpg';
+
+A Full Worker Lifecycle
+
+-- Stage 2 complete
+UPDATE jobs
+SET
+    progress = 50,
+    result   = result || '{"blurred_path": "uploads/processed/blur_d3e4f5a6.jpg"}'::jsonb
+WHERE payload->>'original_filename' = 'jaguar_trail.jpg';
+
+-- Stage 3 complete
+UPDATE jobs
+SET
+    progress = 75,
+    result   = result || '{"scaled_path": "uploads/processed/scaled_d3e4f5a6.jpg"}'::jsonb
+WHERE payload->>'original_filename' = 'jaguar_trail.jpg';
+
+A Full Worker Lifecycle
+
+-- Stage 4 complete — job done
+UPDATE jobs
+SET
+    progress = 100,
+    status   = 'done',
+    result   = result || '{"thumbnail_path": "uploads/processed/thumb_d3e4f5a6.jpg"}'::jsonb
+WHERE payload->>'original_filename' = 'jaguar_trail.jpg';
+
+
+A Stress Test
+
+-- Test how our system performs under load
+INSERT INTO jobs (status, progress, payload, result, error_msg)
+SELECT
+    status,
+    CASE status
+        WHEN 'pending'    THEN 0
+        WHEN 'processing' THEN (random() * 99)::INTEGER
+        WHEN 'done'       THEN 100
+        WHEN 'failed'     THEN (random() * 99)::INTEGER
+    END,
+
+
+A Stress Test
+
+-- Test how our system performs under load
+jsonb_build_object(
+        'original_filename', 'file_' || i || '.jpg',
+        'stored_path',       'uploads/' || md5(i::text) || '.jpg',
+        'mime_type',         CASE WHEN random() > 0.2
+                                  THEN 'image/jpeg'
+                                  ELSE 'image/png'
+                             END,
+        'file_size', (random() * 10000000)::INTEGER
+    ),
+
+
+A Stress Test
+
+-- Test how our system performs under load
+CASE status
+        WHEN 'done' THEN jsonb_build_object(
+            'grayscale_path',  'uploads/processed/gray_'   || md5(i::text) || '.jpg',
+            'blurred_path',    'uploads/processed/blur_'   || md5(i::text) || '.jpg',
+            'scaled_path',     'uploads/processed/scaled_' || md5(i::text) || '.jpg',
+            'thumbnail_path',  'uploads/processed/thumb_'  || md5(i::text) || '.jpg'
+        )
+        ELSE '{}'::jsonb
+    END,
+
+A Stress Test
+
+-- Test how our system performs under load
+CASE status
+        WHEN 'failed' THEN 'ImageProcessingError: stage ' || (random()*4)::INTEGER
+        ELSE NULL
+    END
+FROM generate_series(1, 50000) AS i,
+LATERAL (
+    SELECT (ARRAY['pending','processing','done','failed'])[
+        -- Force exactly 25% per status using modulo — no randomness
+        (((i - 1) % 4) + 1)
+    ] AS status
+) AS s;
+
+Index Test
+
+-- List the indexes
+SELECT indexname, indexdef
+FROM   pg_indexes
+WHERE  tablename = 'jobs'
+ORDER  BY indexname;
+
+Examine the Query Plan - Worker
+
+-- How will PostgreSQL execute this query for the worker
+EXPLAIN ANALYZE
+SELECT id, payload
+FROM   jobs
+WHERE  status = 'pending'
+ORDER  BY created_at
+LIMIT  1;
+
+Examine the Query Plan - Worker
+
+-- How will PostgreSQL execute this query
+Limit  (cost=1234.56..1234.57 rows=1 width=87) (actual time=18.432..18.433 rows=1 loops=1)
+  ->  Sort  (cost=1234.56..1265.23 rows=12268 width=87) (actual time=18.431..18.431 rows=1 loops=1)
+        Sort Key: created_at
+        ->  Seq Scan on jobs  (cost=0.00..987.50 rows=12268 width=87)
+                              (actual time=0.018..12.341 rows=12501 loops=1)
+              Filter: (status = 'pending')
+              Rows Removed by Filter: 37499
+Planning Time: 0.341 ms
+Execution Time: 18.891 ms
+
+Examine the Query Plan - Client
+
+-- How will PostgreSQL execute this query for the worker
+EXPLAIN ANALYZE
+SELECT public_id, status, progress, result, error_msg
+FROM   jobs
+WHERE  public_id = (SELECT public_id FROM jobs LIMIT 1);
+
+Examine the Query Plan - Client
+
+-- How will PostgreSQL execute this query
+Limit  (cost=1234.56..1234.57 rows=1 width=87) (actual time=18.432..18.433 rows=1 loops=1)
+  ->  Sort  (cost=1234.56..1265.23 rows=12268 width=87) (actual time=18.431..18.431 rows=1 loops=1)
+        Sort Key: created_at
+        ->  Seq Scan on jobs  (cost=0.00..987.50 rows=12268 width=87)
+                              (actual time=0.018..12.341 rows=12501 loops=1)
+              Filter: (status = 'pending')
+              Rows Removed by Filter: 37499
+Planning Time: 0.341 ms
+Execution Time: 18.891 ms
+
+Examine the Query Plan - Client
+
+-- How will PostgreSQL execute this query for the payload
+-- @> is the containment operator does payload contain the entry
+EXPLAIN ANALYZE
+SELECT id, payload->>'original_filename' AS filename
+FROM   jobs
+WHERE  payload @> '{"mime_type": "image/jpeg"}'::jsonb;
+
+Examine the Query Plan - Client
+
+-- How will PostgreSQL execute this query
+Seq Scan on jobs  (cost=0.00..6664.28 rows=38892 width=48) (actual time=0.015.
+.28.131 rows=40035.00 loops=1)
+   Filter: (payload @> '{"mime_type": "image/jpeg"}'::jsonb)
+   Rows Removed by Filter: 9969
+   Buffers: shared hit=5942
+ Planning Time: 0.146 ms
+ Execution Time: 30.511 ms
+
+Indexes
+
+We don't want sequential scan, so we need to an index. We will create a composite index. Primary is status then secondary created_at
+
+CREATE INDEX idx_jobs_status_created ON jobs (status, created_at);
+
+
+Examine the Query Plan - Worker
+
+-- How will PostgreSQL execute this query for the worker
+EXPLAIN ANALYZE
+SELECT id, payload
+FROM   jobs
+WHERE  status = 'pending'
+ORDER  BY created_at
+LIMIT  1;
+
+Examine the Query Plan - Worker
+
+-- How will PostgreSQL execute this query
+Limit  (cost=0.42..1.64 rows=1 width=87) (actual time=0.041..0.042 rows=1 loops=1)
+  ->  Index Scan using idx_jobs_status_created on jobs
+        (cost=0.42..1234.56 rows=1 width=87) (actual time=0.040..0.040 rows=1 loops=1)
+        Index Cond: ((status = 'pending') AND (created_at > '2000-01-01'))
+Planning Time: 0.412 ms
+Execution Time: 0.098 ms
+
+Examine the Query Plan - Updates
+
+-- How will PostgreSQL execute this query for the updates
+-- We are filtering and ordering by updated_at, which 
+-- does not have an index
+EXPLAIN ANALYZE
+SELECT public_id, status, progress, updated_at
+FROM   jobs
+WHERE  updated_at > now() - INTERVAL '60 seconds'
+ORDER  BY updated_at DESC;
+
+Examine the Query Plan - Updates
+
+Sort  (cost=3108.08..3108.09 rows=1 width=35) (actual time=19.133..19.134 rows=0.00 loops=1)
+   Sort Key: updated_at DESC
+   Sort Method: quicksort  Memory: 25kB
+   Buffers: shared hit=2236
+   ->  Seq Scan on jobs  (cost=0.00..3108.07 rows=1 width=35) (actual time=19.077..19.078 rows=0.00 loop
+s=1)
+         Filter: (updated_at > (now() - '00:01:00'::interval))
+         Rows Removed by Filter: 50004
+         Buffers: shared hit=2233
+ Planning:
+   Buffers: shared hit=14 dirtied=1
+ Planning Time: 0.369 ms
+ Execution Time: 19.167 ms
+
+Indexes
+
+We need an index on updated_at
+
+CREATE INDEX idx_jobs_updated_at ON jobs (updated_at, DESC);
+
+
+Rerun Query Plan - Updates
+
+-- Now have an index on updated_at
+EXPLAIN ANALYZE
+SELECT public_id, status, progress, updated_at
+FROM   jobs
+WHERE  updated_at > now() - INTERVAL '60 seconds'
+ORDER  BY updated_at DESC;
+
+Rerun Query Plan - Updates
+
+Index Scan Backward using idx_jobs_updated_at on jobs  (cost=0.29..4.31 rows=1 width=35) (actual time=0
+.059..0.060 rows=0.00 loops=1)
+   Index Cond: (updated_at > (now() - '00:01:00'::interval))
+   Index Searches: 1
+   Buffers: shared read=2
+ Planning:
+   Buffers: shared hit=16 read=1
+ Planning Time: 0.414 ms
+ Execution Time: 0.091 ms
+
+Examine the Query Plan - Payload
+
+EXPLAIN ANALYZE
+SELECT id, payload->>'original_filename' AS filename
+FROM   jobs
+WHERE  payload @> '{"mime_type": "image/jpeg"}'::jsonb;
+
+Examine the Query Plan - Payload
+
+Seq Scan on jobs  (cost=0.00..2960.33 rows=40912 width=48) (actual time=0.019..26.366 rows=40031.00 loo
+ps=1)
+   Filter: (payload @> '{"mime_type": "image/jpeg"}'::jsonb)
+   Rows Removed by Filter: 9973
+   Buffers: shared hit=2233
+ Planning Time: 0.185 ms
+ Execution Time: 29.100 ms
+
+GIN Indexes
+
+We need an index for payload.  The normal B-tree index that we use for regular columns is not efficient enough to work with JSONB
+
+We create a GIN (Generalized Inverted Index) which is designed for data types like JSONB
+
+CREATE INDEX idx_jobs_payload ON jobs USING GIN (payload);
+
+
+Rerun Query Plan - Payload
+
+–- the Query Engine decided to ignore our index
+
+Seq Scan on jobs  (cost=0.00..2960.33 rows=40912 width=48) (actual time=0.021..13.776 rows=40031.00 loo
+ps=1)
+   Filter: (payload @> '{"mime_type": "image/jpeg"}'::jsonb)
+   Rows Removed by Filter: 9973
+   Buffers: shared hit=2233
+ Planning:
+   Buffers: shared hit=1
+ Planning Time: 0.231 ms
+ Execution Time: 15.121 ms
+
+Examine the Query Plan - Payload
+
+EXPLAIN ANALYZE
+SELECT id, payload->>'original_filename' AS filename
+FROM   jobs
+WHERE  payload @> '{"mime_type": "image/png", "source": "mobile_upload"}'::jsonb;
+
+Rerun Query Plan - Payload
+
+–- the Query Engine DID decide to use the index
+Bitmap Heap Scan on jobs  (cost=56.02..75.39 rows=5 width=48) (actual time=0.110..0.111 rows=1.00 loops
+=1)
+   Recheck Cond: (payload @> '{"source": "mobile_upload", "mime_type": "image/png"}'::jsonb)
+   Heap Blocks: exact=1
+   Buffers: shared hit=18
+   ->  Bitmap Index Scan on idx_jobs_payload  (cost=0.00..56.02 rows=5 width=0) (actual time=0.100..0.10
+0 rows=1.00 loops=1)
+         Index Cond: (payload @> '{"source": "mobile_upload", "mime_type": "image/png"}'::jsonb)
+         Index Searches: 1
+         Buffers: shared hit=17
+ Planning:
+   Buffers: shared hit=1
+ Planning Time: 0.088 ms
+ Execution Time: 0.125 ms
+
+Examine the Query Plan - result
+
+EXPLAIN ANALYZE
+SELECT id, result->>'thumbnail_path' AS thumbnail
+FROM   jobs
+WHERE  result @> '{"thumbnail_path": "uploads/processed/thumb_a1b2c3d4.jpg"}'::jsonb;
+
+Examine the Query Plan - result
+
+Seq Scan on jobs  (cost=0.00..2858.05 rows=1 width=48) (actual time=0.034..25.628 rows=3.00 loops=1)
+   Filter: (result @> '{"thumbnail_path": "uploads/processed/thumb_a1b2c3d4.jpg"}'::jsonb)
+   Rows Removed by Filter: 50001
+   Buffers: shared hit=2233
+ Planning Time: 0.194 ms
+ Execution Time: 25.653 ms
+
+GIN Indexes on result
+
+We need an index on result
+
+We create a GIN index
+
+CREATE INDEX idx_jobs_result ON jobs USING GIN (result);
+
+
+Rerun the Query Plan - result
+
+EXPLAIN ANALYZE
+SELECT id, result->>'thumbnail_path' AS thumbnail
+FROM   jobs
+WHERE  result @> '{"thumbnail_path": "uploads/processed/thumb_a1b2c3d4.jpg"}'::jsonb;
+
+Rerun the Query Plan - result
+
+Bitmap Heap Scan on jobs  (cost=30.05..34.06 rows=1 width=48) (actual time=0.192..0.196 rows=3.00 loops
+=1)
+   Recheck Cond: (result @> '{"thumbnail_path": "uploads/processed/thumb_a1b2c3d4.jpg"}'::jsonb)
+   Heap Blocks: exact=1
+   Buffers: shared hit=10
+   ->  Bitmap Index Scan on idx_jobs_result  (cost=0.00..30.05 rows=1 width=0) (actual time=0.166..0.167
+ rows=3.00 loops=1)
+         Index Cond: (result @> '{"thumbnail_path": "uploads/processed/thumb_a1b2c3d4.jpg"}'::jsonb)
+         Index Searches: 1
+         Buffers: shared hit=9
+ Planning:
+   Buffers: shared hit=18
+ Planning Time: 0.421 ms
+ Execution Time: 0.233 ms
+
+Index List
+
+SELECT
+    indexname,
+    indexdef
+FROM pg_indexes
+WHERE tablename = 'jobs'
+ORDER BY indexname;
+
+Index Summary Table
+
+
+B-tree vs GIN
+
+Searching FOR a row?           --> use a  btree
+  WHERE status = 'pending'
+  WHERE public_id = '...'
+  WHERE created_at > now() - INTERVAL '1 hour'
+
+B-tree vs GIN
+
+Searching INSIDE a document?  --> use a GIN
+  WHERE payload @> '{"mime_type": "image/jpeg"}'
+  WHERE result  @> '{"thumbnail_path": "..."}'
+  WHERE payload ? 'source'
+
+Final Table
+
+jobs (id, public_id, status, progress, payload, result, error_msg, created_at, updated_at)
+
+Explicitly created three indexes (idx_jobs_status_created, idx_jobs_payload, idx_jobs_result) 
+
+Create one trigger (jobs_updated_at)
+
+Quiz
+
+Create a Go project with a migration directory
+
+Incrementally build the job queue table so that you get a better understanding of the final table and how indexes work especially the Query Planner
+
+Create a video where you demo the final table (add 100k rows of fake  data), and some query result + EXPLAIN ANALYZE results
+
+Due date: April 28th, 2026 by 9:00 am
+

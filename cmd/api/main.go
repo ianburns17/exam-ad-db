@@ -10,8 +10,12 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"sync"
 	"syscall"
 	"time"
+
+	"final/internal/data"
+	"final/internal/mailer"
 
 	_ "github.com/lib/pq"
 )
@@ -21,12 +25,22 @@ const appVersion = "1.0.0"
 type serverConfig struct {
 	port        int
 	environment string
+	mailtrap    struct {
+		apiKey string
+		sender string
+		url    string
+	}
 }
 
 type applicationDependencies struct {
-	config serverConfig
-	logger *slog.Logger
-	db     *sql.DB
+	config          serverConfig
+	logger          *slog.Logger
+	db              *sql.DB
+	wg              sync.WaitGroup
+	mailer          mailer.Mailer
+	userModel       data.UserModel
+	tokenModel      data.TokenModel
+	permissionModel data.PermissionModel
 }
 
 func main() {
@@ -35,6 +49,11 @@ func main() {
 	flag.IntVar(&settings.port, "port", 4000, "Server port")
 	flag.StringVar(&settings.environment, "env", "development",
 		"Environment(development|staging|production)")
+
+	flag.StringVar(&settings.mailtrap.url, "mailtrap-url", "https://sandbox.api.mailtrap.io/api/send/4520864", "Mailtrap URL")
+	flag.StringVar(&settings.mailtrap.apiKey, "mailtrap-api-key", "9e9b8eb6387467d788719e69df04e061", "Mailtrap API Key")
+	flag.StringVar(&settings.mailtrap.sender, "mailtrap-sender", "hello@example.com", "Mailtrap Sender")
+
 	flag.Parse()
 
 	logger := slog.New(slog.NewTextHandler(os.Stdout, nil))
@@ -56,9 +75,13 @@ func main() {
 	}
 
 	appInstance := &applicationDependencies{
-		config: settings,
-		logger: logger,
-		db:     db,
+		config:          settings,
+		logger:          logger,
+		db:              db,
+		userModel:       data.UserModel{DB: db},
+		tokenModel:      data.TokenModel{DB: db},
+		permissionModel: data.PermissionModel{DB: db},
+		mailer:          mailer.New(settings.mailtrap.apiKey, settings.mailtrap.sender, settings.mailtrap.url),
 	}
 
 	// Use the routes() function from routes.go
@@ -80,7 +103,15 @@ func main() {
 		logger.Info("shutting down server", "signal", s.String())
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
-		shutdownError <- apiServer.Shutdown(ctx)
+
+		err := apiServer.Shutdown(ctx)
+		if err != nil {
+			shutdownError <- err
+		}
+
+		appInstance.logger.Info("completing background tasks", "address", apiServer.Addr)
+		appInstance.wg.Wait()
+		shutdownError <- nil
 	}()
 
 	logger.Info("starting server", "address", apiServer.Addr, "environment", settings.environment)

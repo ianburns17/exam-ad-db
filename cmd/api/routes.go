@@ -14,6 +14,10 @@ func (a *applicationDependencies) routes() http.Handler {
 	// Healthcheck
 	router.HandlerFunc(http.MethodGet, "/v1/healthcheck", a.healthcheckHandler)
 
+	router.HandlerFunc(http.MethodPost, "/v1/users", a.registerUserHandler)
+	router.HandlerFunc(http.MethodPut, "/v1/users/activated", a.activateUserHandler)
+	router.HandlerFunc(http.MethodPost, "/v1/tokens/authentication", a.createAuthenticationTokenHandler)
+
 	router.HandlerFunc(http.MethodPost, "/v1/vehicles", a.createVehicleHandler)
 	router.HandlerFunc(http.MethodGet, "/v1/vehicles/:id", a.getVehicleHandler)
 	router.HandlerFunc(http.MethodGet, "/v1/vehicles", a.listVehiclesHandler)
@@ -99,9 +103,11 @@ func (a *applicationDependencies) routes() http.Handler {
 	// Chain CORS, metrics, gzip, rate limiting, and panic recovery middleware
 	return a.recoverPanic(
 		a.rateLimit(
-			a.gzipMiddleware(
-				a.metricsMiddleware(
-					a.corsMiddleware(router),
+			a.authenticate(
+				a.gzipMiddleware(
+					a.metricsMiddleware(
+						a.corsMiddleware(router),
+					),
 				),
 			),
 		),

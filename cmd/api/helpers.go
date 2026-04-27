@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 )
 
@@ -32,3 +33,31 @@ func (a *applicationDependencies) writeJSON(w http.ResponseWriter,
 	return nil
 
 }
+
+func (a *applicationDependencies) readJSON(w http.ResponseWriter, r *http.Request, dst any) error {
+	maxBytes := 1_048_576 // 1MB
+	r.Body = http.MaxBytesReader(w, r.Body, int64(maxBytes))
+
+	dec := json.NewDecoder(r.Body)
+	dec.DisallowUnknownFields()
+	err := dec.Decode(dst)
+	if err != nil {
+		return err
+	}
+	return nil
+}
+
+func (a *applicationDependencies) background(fn func()) {
+	a.wg.Add(1)
+	go func() {
+		defer a.wg.Done()
+		defer func() {
+			err := recover()
+			if err != nil {
+				a.logger.Error(fmt.Sprintf("%v", err))
+			}
+		}()
+		fn()
+	}()
+}
+
