@@ -1,9 +1,13 @@
 include .envrc
-.PHONY: run migrate-up migrate-down migrate-force migrate-version
+.PHONY: run ui migrate-up migrate-down migrate-force migrate-version
 
 run:
 	@echo  'Running application…'
 	@go run ./cmd/api
+
+ui:
+	@echo 'Running UI server…'
+	@go run ./ui.go
 
 migrate-up:
 	migrate -path=./migrations -database=$(DSN) up
