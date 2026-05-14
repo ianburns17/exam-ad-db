@@ -4,7 +4,7 @@
  * Observer Pattern:
  * - `createStore()` holds state and notifies subscribers on changes.
  * - Views subscribe to state changes; actions update state and trigger fetches.
- *
+ 
  * Pagination:
  * - Uses backend query params: page, page_size, sort, direction.
  * - Auto-loads next page using IntersectionObserver (scroll sentinel).
@@ -158,7 +158,6 @@ function renderApp(root) {
   ]);
 
   const refreshBtn = el("button", { class: "btn primary", id: "refreshBtn", text: "Refresh" });
-  const loadMoreBtn = el("button", { class: "btn primary", id: "loadMoreBtn", text: "Load More" });
   const clearBtn = el("button", { class: "btn danger", id: "clearBtn", text: "Clear" });
 
   const statusPill = el("span", { class: "pill", id: "statusPill" });
@@ -216,7 +215,6 @@ function renderApp(root) {
       el("div", {}, [table]),
       el("div", { class: "footer" }, [
         el("div", { class: "hint", text: "Tip: scroll to the bottom to auto-load more pages." }),
-        loadMoreBtn,
         sentinel,
       ]),
     ]),
@@ -248,10 +246,6 @@ function renderApp(root) {
     if (loadingPill) loadingPill.textContent = s.loading ? "Loading…" : "Idle";
 
     errorEl.textContent = s.error || "";
-
-    const hasMore = canLoadMore(s);
-    loadMoreBtn.disabled = s.loading || !hasMore;
-    loadMoreBtn.style.display = hasMore ? "inline-flex" : "none";
   }
 
   function renderRows(s) {
@@ -300,7 +294,6 @@ function renderApp(root) {
     resetAndFetch();
   });
   refreshBtn.addEventListener("click", () => resetAndFetch());
-  loadMoreBtn.addEventListener("click", () => void loadNextPage());
   clearBtn.addEventListener("click", () => store.setState({ vehicles: [], total: null, page: 0, error: "" }));
 
   // IntersectionObserver auto-pagination.

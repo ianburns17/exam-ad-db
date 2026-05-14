@@ -1,0 +1,270 @@
+DROP TABLE
+CREATE TABLE
+INSERT 0 3
+-- 1. Show all jobs ordered by creation time
+                  id                  |                                                       payload                                                        |          created_at           
+--------------------------------------+----------------------------------------------------------------------------------------------------------------------+-------------------------------
+ 7386213e-e7c8-4f6b-bde2-63d417132f0c | {"file_size": 3400000, "mime_type": "audio/mpeg", "original_filename": "punta_beat_01.mp3"}                          | 2026-05-14 00:53:51.454741+00
+ 3a56fb75-8c1b-46a3-80be-f8b19a26eff7 | {"file_size": 15000000, "mime_type": "audio/wav", "original_filename": "brukdown_rhythm.wav"}                        | 2026-05-14 00:53:51.454741+00
+ d21c3da7-d28a-4743-9d72-b0684df3e563 | {"source": "mobile_app", "file_size": 4200000, "mime_type": "audio/mpeg", "original_filename": "garifuna_drums.mp3"} | 2026-05-14 00:53:51.454741+00
+(3 rows)
+
+-- 2. Extract just the filename and mime_type from each job
+      filename       | mime_type  
+---------------------+------------
+ punta_beat_01.mp3   | audio/mpeg
+ brukdown_rhythm.wav | audio/wav
+ garifuna_drums.mp3  | audio/mpeg
+(3 rows)
+
+-- 3. Find only MP3 uploads
+      filename      
+--------------------
+ punta_beat_01.mp3
+ garifuna_drums.mp3
+(2 rows)
+
+-- 4. Find the job that has the extra field
+      filename      
+--------------------
+ garifuna_drums.mp3
+(1 row)
+
+ALTER TABLE
+-- 1. Show id vs public_id side by side — what do you notice?
+                  id                  |              public_id               
+--------------------------------------+--------------------------------------
+ 7386213e-e7c8-4f6b-bde2-63d417132f0c | 4775cdd6-02af-45b3-9787-6f4bbfa0817a
+(1 row)
+
+-- 2. Run uuid_extract_timestamp() on both columns — what does this prove?
+         internal_time         |         external_time         
+-------------------------------+-------------------------------
+ 2026-05-14 00:53:51.467705+00 | 2026-05-14 00:53:51.467705+00
+(1 row)
+
+-- 3. Show what the Go server would return to the client after insert
+              public_id               
+--------------------------------------
+ 4775cdd6-02af-45b3-9787-6f4bbfa0817a
+(1 row)
+
+-- 4. Show what the Go server would do when the client polls
+              public_id               
+--------------------------------------
+ 4775cdd6-02af-45b3-9787-6f4bbfa0817a
+(1 row)
+
+ALTER TABLE
+    claimed_job    
+-------------------
+ punta_beat_01.mp3
+(1 row)
+
+UPDATE 1
+UPDATE 1
+UPDATE 1
+UPDATE 1
+-- Deliberately attempt an invalid status and invalid progress
+-- 1. What does the client see when polling a processing job?
+ status | progress 
+--------+----------
+(0 rows)
+
+-- 2. What query does the worker run to find its next job?
+                  id                  |                                            payload                                            
+--------------------------------------+-----------------------------------------------------------------------------------------------
+ 3a56fb75-8c1b-46a3-80be-f8b19a26eff7 | {"file_size": 15000000, "mime_type": "audio/wav", "original_filename": "brukdown_rhythm.wav"}
+(1 row)
+
+-- 3. Show all jobs with their current state
+      filename       | status  | progress 
+---------------------+---------+----------
+ brukdown_rhythm.wav | pending |        0
+ garifuna_drums.mp3  | pending |        0
+ punta_beat_01.mp3   | done    |      100
+(3 rows)
+
+ALTER TABLE
+UPDATE 1
+UPDATE 1
+UPDATE 1
+UPDATE 1
+UPDATE 1
+UPDATE 1
+-- 1. What does the client see when polling a completed job?
+ status | progress | result 
+--------+----------+--------
+ done   |      100 | {}
+(1 row)
+
+-- 2. What does the client see mid-processing (partial result)?
+-- 3. How do you find all failed jobs?
+                  id                  |                      error_msg                       
+--------------------------------------+------------------------------------------------------
+ d21c3da7-d28a-4743-9d72-b0684df3e563 | FFmpegError: Invalid bit depth in garifuna_drums.mp3
+(1 row)
+
+-- 4. Show the full result object for a completed job
+ result 
+--------
+ {}
+(1 row)
+
+ALTER TABLE
+UPDATE 1
+-- Show stale updated_at
+ progress |          updated_at           
+----------+-------------------------------
+       10 | 2026-05-14 00:53:51.482892+00
+(1 row)
+
+UPDATE 1
+-- 1. Find jobs that changed in the last 60 seconds
+                  id                  
+--------------------------------------
+ 3a56fb75-8c1b-46a3-80be-f8b19a26eff7
+ d21c3da7-d28a-4743-9d72-b0684df3e563
+ 7386213e-e7c8-4f6b-bde2-63d417132f0c
+(3 rows)
+
+-- 2. Find jobs stuck in processing for more than 5 minutes
+ id 
+----
+(0 rows)
+
+-- 3. How long did each completed job take?
+      ?column?       |    duration     
+---------------------+-----------------
+ brukdown_rhythm.wav | 00:00:00.028151
+ punta_beat_01.mp3   | 00:00:00.030463
+(2 rows)
+
+CREATE FUNCTION
+CREATE TRIGGER
+UPDATE 1
+UPDATE 1
+-- Show trigger overwrote sabotage
+ progress |          updated_at           
+----------+-------------------------------
+       75 | 2026-05-14 00:53:51.491672+00
+(1 row)
+
+-- 1. Show trigger details
+     trigger_name      | action_timing |         action_statement          
+-----------------------+---------------+-----------------------------------
+ music_jobs_updated_at | BEFORE        | EXECUTE FUNCTION set_updated_at()
+(1 row)
+
+-- 2. Show function details
+  routine_name  | data_type 
+----------------+-----------
+ set_updated_at | trigger
+(1 row)
+
+-- Part A: Generate 50,000 rows
+INSERT 0 50000
+-- Part B: EXPLAIN ANALYZE Before Indexes
+                                                       QUERY PLAN                                                        
+-------------------------------------------------------------------------------------------------------------------------
+ Limit  (cost=1442.23..1442.23 rows=1 width=56) (actual time=11.449..11.451 rows=1 loops=1)
+   ->  Sort  (cost=1442.23..1442.28 rows=21 width=56) (actual time=11.448..11.448 rows=1 loops=1)
+         Sort Key: created_at
+         Sort Method: top-N heapsort  Memory: 25kB
+         ->  Seq Scan on music_jobs  (cost=0.00..1442.12 rows=21 width=56) (actual time=0.013..9.183 rows=12500 loops=1)
+               Filter: (status = 'pending'::text)
+               Rows Removed by Filter: 37503
+ Planning Time: 0.051 ms
+ Execution Time: 11.468 ms
+(9 rows)
+
+                                                              QUERY PLAN                                                               
+---------------------------------------------------------------------------------------------------------------------------------------
+ Index Scan using music_jobs_public_id_key on music_jobs  (cost=0.63..8.64 rows=1 width=116) (actual time=0.018..0.019 rows=1 loops=1)
+   Index Cond: (public_id = $0)
+   InitPlan 1 (returns $0)
+     ->  Limit  (cost=0.00..0.34 rows=1 width=16) (actual time=0.006..0.007 rows=1 loops=1)
+           ->  Seq Scan on music_jobs music_jobs_1  (cost=0.00..1431.70 rows=4170 width=16) (actual time=0.005..0.005 rows=1 loops=1)
+ Planning Time: 0.088 ms
+ Execution Time: 0.030 ms
+(7 rows)
+
+                                                  QUERY PLAN                                                  
+--------------------------------------------------------------------------------------------------------------
+ Seq Scan on music_jobs  (cost=0.00..1442.23 rows=42 width=48) (actual time=0.007..16.655 rows=39961 loops=1)
+   Filter: (payload @> '{"mime_type": "audio/mpeg"}'::jsonb)
+   Rows Removed by Filter: 10042
+ Planning Time: 0.024 ms
+ Execution Time: 17.509 ms
+(5 rows)
+
+-- Part C: Add Indexes
+CREATE INDEX
+CREATE INDEX
+CREATE INDEX
+-- Part D: EXPLAIN ANALYZE After Indexes
+                                                                     QUERY PLAN                                                                      
+-----------------------------------------------------------------------------------------------------------------------------------------------------
+ Limit  (cost=0.29..4.00 rows=1 width=56) (actual time=0.029..0.029 rows=1 loops=1)
+   ->  Index Scan using idx_music_jobs_status_created on music_jobs  (cost=0.29..928.66 rows=250 width=56) (actual time=0.028..0.028 rows=1 loops=1)
+         Index Cond: (status = 'pending'::text)
+ Planning Time: 0.167 ms
+ Execution Time: 0.040 ms
+(5 rows)
+
+                                                              QUERY PLAN                                                               
+---------------------------------------------------------------------------------------------------------------------------------------
+ Index Scan using music_jobs_public_id_key on music_jobs  (cost=0.33..8.35 rows=1 width=116) (actual time=0.011..0.011 rows=1 loops=1)
+   Index Cond: (public_id = $0)
+   InitPlan 1 (returns $0)
+     ->  Limit  (cost=0.00..0.04 rows=1 width=16) (actual time=0.004..0.004 rows=1 loops=1)
+           ->  Seq Scan on music_jobs music_jobs_1  (cost=0.00..1890.03 rows=50003 width=16) (actual time=0.003..0.003 rows=1 loops=1)
+ Planning Time: 0.047 ms
+ Execution Time: 0.019 ms
+(7 rows)
+
+                                                              QUERY PLAN                                                              
+--------------------------------------------------------------------------------------------------------------------------------------
+ Bitmap Heap Scan on music_jobs  (cost=32.68..1033.65 rows=500 width=48) (actual time=3.088..18.912 rows=39961 loops=1)
+   Recheck Cond: (payload @> '{"mime_type": "audio/mpeg"}'::jsonb)
+   Heap Blocks: exact=1390
+   ->  Bitmap Index Scan on idx_music_jobs_payload  (cost=0.00..32.55 rows=500 width=0) (actual time=2.953..2.953 rows=39961 loops=1)
+         Index Cond: (payload @> '{"mime_type": "audio/mpeg"}'::jsonb)
+ Planning Time: 0.067 ms
+ Execution Time: 19.787 ms
+(7 rows)
+
+-- Final Verification
+           indexname           |                                             indexdef                                             
+-------------------------------+--------------------------------------------------------------------------------------------------
+ idx_music_jobs_payload        | CREATE INDEX idx_music_jobs_payload ON public.music_jobs USING gin (payload)
+ idx_music_jobs_result         | CREATE INDEX idx_music_jobs_result ON public.music_jobs USING gin (result)
+ idx_music_jobs_status_created | CREATE INDEX idx_music_jobs_status_created ON public.music_jobs USING btree (status, created_at)
+ music_jobs_pkey               | CREATE UNIQUE INDEX music_jobs_pkey ON public.music_jobs USING btree (id)
+ music_jobs_public_id_key      | CREATE UNIQUE INDEX music_jobs_public_id_key ON public.music_jobs USING btree (public_id)
+(5 rows)
+
+                           Table "public.music_jobs"
+   Column   |           Type           | Collation | Nullable |     Default     
+------------+--------------------------+-----------+----------+-----------------
+ id         | uuid                     |           | not null | uuidv7()
+ payload    | jsonb                    |           | not null | 
+ created_at | timestamp with time zone |           | not null | now()
+ public_id  | uuid                     |           | not null | uuidv4()
+ status     | text                     |           | not null | 'pending'::text
+ progress   | integer                  |           | not null | 0
+ result     | jsonb                    |           | not null | '{}'::jsonb
+ error_msg  | text                     |           |          | 
+ updated_at | timestamp with time zone |           | not null | now()
+Indexes:
+    "music_jobs_pkey" PRIMARY KEY, btree (id)
+    "idx_music_jobs_payload" gin (payload)
+    "idx_music_jobs_result" gin (result)
+    "idx_music_jobs_status_created" btree (status, created_at)
+    "music_jobs_public_id_key" UNIQUE CONSTRAINT, btree (public_id)
+Check constraints:
+    "music_jobs_progress_check" CHECK (progress >= 0 AND progress <= 100)
+    "music_jobs_status_check" CHECK (status = ANY (ARRAY['pending'::text, 'processing'::text, 'done'::text, 'failed'::text]))
+Triggers:
+    music_jobs_updated_at BEFORE UPDATE ON music_jobs FOR EACH ROW EXECUTE FUNCTION set_updated_at()
+

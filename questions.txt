@@ -1,0 +1,213 @@
+# CMPS3162 — Test #2: PostgreSQL Job Queue
+# Questions and Verification Queries
+
+==================================================
+STEP 1: id, payload, created_at
+==================================================
+
+[Questions]
+1. Why UUID over SERIAL for the primary key?
+   SERIAL keys are predictable sequences (1, 2, 3...) that leak the size and growth rate of a business. UUIDs are unguessable, allowing for secure, decoupled ID generation across distributed systems without bottlenecking on a central database sequence.
+
+2. Why uuidv7() specifically over uuidv4()?
+   uuidv7() is time-ordered. Its first 48 bits encode a timestamp, meaning new inserts naturally cluster at the end of the B-Tree index. Purely random uuidv4() scatters inserts across the entire index tree, leading to severe index fragmentation and catastrophic performance degradation at scale (page thrashing).
+
+3. Why JSONB over JSON?
+   JSON stores exact text copies (including whitespace and duplicate keys) and must be fully reparsed on every read. JSONB is stored in a decomposed binary format, which removes whitespace/duplicates but makes reading significantly faster and supports powerful advanced indexing (like GIN).
+
+4. Why TIMESTAMPTZ over TIMESTAMP?
+   TIMESTAMPTZ stores the absolute UTC point in time and correctly converts it to the querying client's local timezone. Standard TIMESTAMP blindly assumes local time, causing silent data corruption and severe bugs when servers are in different time zones or undergo Daylight Saving Time transitions.
+
+[Verification Queries]
+-- 1. Show all jobs ordered by creation time
+SELECT id, payload, created_at FROM music_jobs ORDER BY created_at;
+
+-- 2. Extract just the filename and mime_type from each job
+SELECT payload->>'original_filename' AS filename, payload->>'mime_type' AS mime_type FROM music_jobs;
+
+-- 3. Find only MP3 uploads
+SELECT payload->>'original_filename' AS filename FROM music_jobs WHERE payload->>'mime_type' = 'audio/mpeg';
+
+-- 4. Find the job that has the extra field
+SELECT payload->>'original_filename' AS filename FROM music_jobs WHERE payload ? 'source';
+
+
+==================================================
+STEP 2: public_id
+==================================================
+
+[Questions]
+1. Why does this column use uuidv4() and not uuidv7()?
+   uuidv7 embeds a high-precision timestamp in the ID. This leaks the exact time the job was created, which can be sensitive metadata. uuidv4 is purely cryptographically random and leaks no structural or temporal information to external clients.
+
+2. What does uuid_extract_timestamp() reveal about uuidv7?
+   It reveals the precise millisecond-accurate timestamp of when the UUID was generated.
+
+3. Why does the UNIQUE constraint make CREATE INDEX unnecessary?
+   In PostgreSQL, defining a UNIQUE constraint on a column automatically and implicitly creates a unique B-Tree index on that column to enforce the uniqueness rule under the hood.
+
+4. What is the two-ID pattern and why does it matter?
+   The two-ID pattern involves using a time-ordered internal ID (uuidv7 or BIGSERIAL) for optimal database storage performance and fast joins, while exposing a completely random external ID (uuidv4) to users via the API. It isolates internal database mechanics from the public contract, providing both performance and security.
+
+[Verification Queries]
+-- 1. Show id vs public_id side by side — what do you notice?
+SELECT id, public_id FROM music_jobs LIMIT 1;
+-- Notice: The `id` (uuidv7) begins with a predictable timestamp segment, while `public_id` (uuidv4) is completely random.
+
+-- 2. Run uuid_extract_timestamp() on both columns — what does this prove?
+SELECT uuid_extract_timestamp(id) AS internal_time, uuid_extract_timestamp(public_id) AS external_time FROM music_jobs LIMIT 1;
+-- Proves: Under PG18, internal_time extracts perfectly. Extracting from public_id yields random meaningless dates, proving uuidv4 hides metadata.
+
+-- 3. Show what the Go server would return to the client after insert
+SELECT public_id FROM music_jobs ORDER BY created_at DESC LIMIT 1;
+
+-- 4. Show what the Go server would do when the client polls
+SELECT public_id FROM music_jobs WHERE public_id = (SELECT public_id FROM music_jobs LIMIT 1);
+
+
+==================================================
+STEP 3: status, progress
+==================================================
+
+[Questions]
+1. Why are status and progress real columns, not inside payload JSONB?
+   These fields describe the core state of the job and are frequently queried, filtered, and updated independently. Storing them in a JSONB blob prevents efficient single-column indexing, complicates partial updates, and makes enforcing CHECK constraints much harder.
+
+2. What happens if a buggy worker writes status = 'complet'?
+   The database outright rejects the query with a CHECK constraint violation error. The bad data never enters the system.
+
+3. Why does the CHECK constraint matter more than application validation?
+   Application code often has multiple entry points. A database-level CHECK constraint ensures data integrity at the lowest level, impossible to bypass regardless of client bugs.
+
+4. Draw the state machine for a job lifecycle
+   [pending] ---> [processing] ---> [done]
+                       \
+                        \--> [failed]
+
+[Verification Queries]
+-- 1. What does the client see when polling a processing job?
+SELECT status, progress FROM music_jobs WHERE status = 'processing';
+
+-- 2. What query does the worker run to find its next job?
+SELECT id, payload FROM music_jobs WHERE status = 'pending' ORDER BY created_at LIMIT 1;
+
+-- 3. Show all jobs with their current state
+SELECT payload->>'original_filename' AS filename, status, progress FROM music_jobs;
+
+
+==================================================
+STEP 4: result, error_msg
+==================================================
+
+[Questions]
+1. Why does the result default to '{}' and not NULL?
+   A default of '{}' allows workers to incrementally append keys using the JSONB concatenation operator (||). If it were NULL, the concatenation `NULL || '{"key":"val"}'::jsonb` would evaluate to NULL, destroying the update.
+
+2. Why is error_msg TEXT and not inside the result JSONB?
+   An error message represents a fundamental divergence from the expected structure. Storing it as a top-level typed TEXT column makes it highly visible, easy to query (`WHERE error_msg IS NOT NULL`), and physically separates failure metadata from success payload structures.
+
+3. What does the || operator do to a JSONB object?
+   It merges two JSONB objects. If the key already exists, the right-side value overrides the left-side value. If the key doesn't exist, it is appended to the object.
+
+4. Why does each stage read from the original file, not the previous stage's output?
+   Reading from the original file ensures the highest quality source material is always used, preventing generational loss (compression artifacts compounding across conversions). It also allows stages to theoretically run in parallel if independent.
+
+[Verification Queries]
+-- 1. What does the client see when polling a completed job?
+SELECT status, progress, result FROM music_jobs WHERE status = 'done' LIMIT 1;
+
+-- 2. What does the client see mid-processing (partial result)?
+-- (Theoretically, they would see: status: processing, progress: 50, result: {"normalized_path": "...", "trimmed_path": "..."})
+
+-- 3. How do you find all failed jobs?
+SELECT id, error_msg FROM music_jobs WHERE status = 'failed';
+
+-- 4. Show the full result object for a completed job
+SELECT result FROM music_jobs WHERE status = 'done' LIMIT 1;
+
+
+==================================================
+STEP 5: updated_at
+==================================================
+
+[Questions]
+1. Why is created_at not enough?
+   `created_at` represents the birth of the record (history). It never changes. To detect stuck jobs or push state-change notifications efficiently (SSE/WebSockets), the system must query "what records changed in the last N seconds?", which strictly requires an `updated_at` column.
+
+2. What goes wrong if application code maintains updated_at?
+   Inevitably, some application script or microservice will update a row and forget to set `updated_at = now()`. This silent omission breaks synchronization, SSE streams, and straggler-detection logic globally.
+
+3. Write a query that would power an SSE health check endpoint
+   SELECT public_id, status, progress FROM music_jobs WHERE updated_at > now() - INTERVAL '5 seconds' ORDER BY updated_at DESC;
+
+[Verification Queries]
+-- 1. Find jobs that changed in the last 60 seconds
+SELECT id FROM music_jobs WHERE updated_at > now() - INTERVAL '60 seconds';
+
+-- 2. Find jobs stuck in processing for more than 5 minutes
+SELECT id FROM music_jobs WHERE status = 'processing' AND updated_at < now() - INTERVAL '5 minutes';
+
+-- 3. How long did each completed job take?
+SELECT payload->>'original_filename' AS filename, updated_at - created_at AS duration FROM music_jobs WHERE status = 'done';
+
+
+==================================================
+STEP 6: Trigger on updated_at
+==================================================
+
+[Questions]
+1. Why BEFORE UPDATE and not AFTER UPDATE?
+   A BEFORE UPDATE trigger intercepts the row data *before* it is written to disk, allowing the trigger to modify the payload (e.g., overriding NEW.updated_at). An AFTER UPDATE trigger fires after the data is written, requiring an entirely new query to mutate the row again.
+
+2. What is NEW and what is OLD in a trigger function?
+   NEW is a special variable containing the incoming row data representing the proposed state after the update. OLD contains the existing row data representing the state before the update occurs.
+
+3. Why does returning NEW matter?
+   In a BEFORE trigger, the row returned by the trigger function is what actually gets saved to the database. Returning NEW saves the row with our injected `updated_at` value. Returning NULL would silently cancel the update entirely.
+
+4. Why is the function reusable across tables?
+   The function dynamically manipulates the NEW record generically without explicitly referencing `music_jobs`. As long as the target table has an `updated_at` column, this function can be bound to it via a trigger.
+
+[Verification Queries]
+-- 1. Show trigger details
+SELECT trigger_name, action_timing, action_statement FROM information_schema.triggers WHERE event_object_table = 'music_jobs';
+
+-- 2. Show function details
+SELECT routine_name, data_type FROM information_schema.routines WHERE routine_name = 'set_updated_at';
+
+
+==================================================
+STEP 7: Indexes + EXPLAIN ANALYZE
+==================================================
+
+[Questions]
+1. What is a sequential scan and why is it slow at scale?
+   A sequential scan forces the database engine to read every single row block-by-block on disk to evaluate the WHERE clause. At scale (millions of rows), this requires immense disk I/O and memory caching, resulting in agonizingly slow O(N) performance.
+
+2. Why does the worker poll query need a COMPOSITE index and not just an index on status alone?
+   The worker poll uses BOTH `status = 'pending'` for filtering AND `ORDER BY created_at` for sorting. If the index was only on status, Postgres would filter the pending rows fast, but then have to perform an expensive in-memory sort on thousands of rows. A composite index pre-sorts the pending rows by creation time, allowing Postgres to grab the first matching row instantly without sorting.
+
+3. Why GIN and not btree for JSONB columns?
+   B-Tree indexes compare entire scalar values (string vs string). To use a B-Tree for JSON, you'd have to query the EXACT JSON structure. GIN (Generalized Inverted Index) builds an index of all individual keys and values *inside* the JSON document, allowing rapid structural containment searches.
+
+4. Which operators USE the GIN index? Which do NOT?
+   The containment operator (`@>`), existence operators (`?`, `?|`, `?&`), and path matching operator (`@@`) utilize the GIN index. Extraction operators like `->` and `->>` DO NOT use the GIN index (they just fetch fields dynamically).
+
+5. What speedup did you measure? Show the before/after execution times.
+   - Worker Poll (Query 1): Execution Time dropped from 11.468 ms (Seq Scan + Sort) to 0.040 ms (Index Scan). A massive ~286x speedup.
+   - Client Poll (Query 2): Execution time dropped from 0.030 ms to 0.019 ms. The query planner already used the implicit unique B-Tree index created by the `UNIQUE` constraint on `public_id`, so performance was already near-optimal!
+   - JSON Containment (Query 3): Shifted from a Seq Scan (17.509 ms) to a Bitmap Heap Scan using the GIN index (19.787 ms). In this edge case, the index was actually slightly *slower* because `audio/mpeg` constitutes ~80% of our rows. When retrieving a huge fraction of a table, scanning it sequentially is often faster than performing random I/O via an index structure!
+
+[Verification Queries]
+-- 1. EXPLAIN ANALYZE worker query
+EXPLAIN ANALYZE SELECT id, payload FROM music_jobs WHERE status = 'pending' ORDER BY created_at LIMIT 1;
+
+-- 2. EXPLAIN ANALYZE client query
+EXPLAIN ANALYZE SELECT public_id, status, progress, result, error_msg FROM music_jobs WHERE public_id = (SELECT public_id FROM music_jobs LIMIT 1);
+
+-- 3. EXPLAIN ANALYZE JSON query
+EXPLAIN ANALYZE SELECT id, payload->>'original_filename' FROM music_jobs WHERE payload @> '{"mime_type": "audio/mpeg"}'::jsonb;
+
+-- 4. Final verification queries
+SELECT indexname, indexdef FROM pg_indexes WHERE tablename = 'music_jobs' ORDER BY indexname;
+\d music_jobs

@@ -1,26 +1,16 @@
-version: '3.8'
-
 services:
-  db:
-    image: postgres:17
-    container_name: job_queue_db
-    environment:
-      POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: password
-      POSTGRES_DB: jobsdb
+  postgres:
+    image: postgres:16
+    container_name: codespaces-postgres
+    restart: unless-stopped
     ports:
       - "5432:5432"
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: app_db
     volumes:
-      - pgdata:/var/lib/postgresql/data
-
-  adminer:
-    image: adminer
-    container_name: job_queue_adminer
-    restart: always
-    ports:
-      - "8080:8080"
-    depends_on:
-      - db
+      - postgres_data:/var/lib/postgresql/data
 
 volumes:
-  pgdata:
+  postgres_data:

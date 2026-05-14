@@ -1,0 +1,2 @@
+DROP TABLE IF EXISTS test_jsonb;
+DROP TABLE IF EXISTS test_json;
